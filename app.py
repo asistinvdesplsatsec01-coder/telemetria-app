@@ -8,71 +8,82 @@ def analizar_datos_pro(df):
     df['Fecha Hora'] = pd.to_datetime(df['Fecha Hora'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
-    # 2. Parámetros de Auditoría Ajustados
-    # Bajamos la sensibilidad para detectar extracciones lentas o con motor apagado
+    # --- Parámetros de Auditoría Física ---
     UMBRAL_ROBO = -5.0  
     UMBRAL_CARGA = 15.0 
-    
-    df['diff_l'] = df['Total combustible'].diff()
+    MINUTOS_ESTABILIZACION = 3 # Tiempo para que el diésel deje de olear tras detenerse
     
     eventos = []
-    
-    # --- NUEVA LÓGICA DE DETECCIÓN POR SALTOS ---
-    # Buscamos cambios significativos entre registros sin importar la velocidad
     i = 0
+    
     while i < len(df) - 1:
-        inicio_idx = i
-        current_l = df.iloc[i]['Total combustible']
+        f_inicio = df.iloc[i]
         
-        # Buscar el final de una tendencia (bajada o subida)
-        j = i + 1
-        while j < len(df):
-            next_l = df.iloc[j]['Total combustible']
-            diff = next_l - current_l
+        # REGLA 1: Solo auditar si Velocidad es 0 Y el Odómetro no ha cambiado
+        # (Usamos una tolerancia de 1 metro por error de GPS)
+        odo_cambio = abs(df.iloc[i]['Odometro'] - df.iloc[i-1]['Odometro']) if i > 0 else 0
+        
+        if f_inicio['Velocidad'] == 0 and odo_cambio <= 1:
+            # REGLA 2: Ventana de Estabilización (Evitar Oleaje)
+            # Buscamos el registro que esté N minutos después de detenerse
+            hora_estabilizada = f_inicio['Fecha Hora'] + pd.Timedelta(minutes=MINUTOS_ESTABILIZACION)
             
-            # Si hay un cambio brusco acumulado con Velocidad 0
-            if df.iloc[j]['Velocidad'] == 0:
-                # Detectar Carga
-                if diff > UMBRAL_CARGA:
-                    # Verificar si la carga sigue subiendo
-                    while j < len(df)-1 and df.iloc[j+1]['Total combustible'] >= next_l:
-                        j += 1
-                        next_l = df.iloc[j]['Total combustible']
-                    
-                    eventos.append({
-                        'Tipo': 'CARGA',
-                        'PI': df.iloc[inicio_idx]['Fecha Hora'],
-                        'PF': df.iloc[j]['Fecha Hora'],
-                        'Litros': round(df.iloc[j]['Total combustible'] - df.iloc[inicio_idx]['Total combustible'], 2),
-                        'Odo': df.iloc[j]['Odometro']
-                    })
+            # Saltamos los registros del "oleaje"
+            j = i
+            while j < len(df) - 1 and df.iloc[j]['Fecha Hora'] < hora_estabilizada:
+                j += 1
+            
+            if j >= len(df) - 1: break
+            
+            # Ahora sí, auditamos a partir de nivel estabilizado
+            f_estable = df.iloc[j]
+            k = j + 1
+            while k < len(df):
+                f_actual = df.iloc[k]
+                
+                # Si se vuelve a mover o cambia el odo, cerramos ventana de auditoría
+                cambio_odo_k = abs(f_actual['Odometro'] - df.iloc[k-1]['Odometro'])
+                if f_actual['Velocidad'] > 2 or cambio_odo_k > 1:
                     break
                 
-                # Detectar Descarga (Robo)
-                elif diff < UMBRAL_ROBO:
-                    # Verificar si la descarga sigue bajando
-                    while j < len(df)-1 and df.iloc[j+1]['Total combustible'] <= next_l:
-                        j += 1
-                        next_l = df.iloc[j]['Total combustible']
-                        
-                    total_descarga = df.iloc[j]['Total combustible'] - df.iloc[inicio_idx]['Total combustible']
-                    if total_descarga <= UMBRAL_ROBO:
-                        eventos.append({
-                            'Tipo': 'DESCARGA/ROBO',
-                            'PI': df.iloc[inicio_idx]['Fecha Hora'],
-                            'PF': df.iloc[j]['Fecha Hora'],
-                            'Litros': round(total_descarga, 2),
-                            'Odo': df.iloc[j]['Odometro']
-                        })
+                diff_acumulada = f_actual['Total combustible'] - f_estable['Total combustible']
+                
+                # Detectar Robo tras estabilización
+                if diff_acumulada <= UMBRAL_ROBO:
+                    # Seguir mientras siga bajando
+                    while k < len(df)-1 and df.iloc[k+1]['Total combustible'] <= f_actual['Total combustible'] and df.iloc[k+1]['Velocidad'] == 0:
+                        k += 1
+                        f_actual = df.iloc[k]
+                    
+                    eventos.append({
+                        'Tipo': 'DESCARGA/ROBO',
+                        'PI': f_estable['Fecha Hora'],
+                        'PF': f_actual['Fecha Hora'],
+                        'Litros': round(f_actual['Total combustible'] - f_estable['Total combustible'], 2),
+                        'Odo': f_actual['Odometro']
+                    })
                     break
-            
-            # Si el camión se mueve, romper la búsqueda de evento estático
-            if df.iloc[j]['Velocidad'] > 5:
-                break
-            j += 1
-        i = j
 
-    # --- BALANCE TOTAL ---
+                # Detectar Carga tras estabilización
+                elif diff_acumulada >= UMBRAL_CARGA:
+                    while k < len(df)-1 and df.iloc[k+1]['Total combustible'] >= f_actual['Total combustible'] and df.iloc[k+1]['Velocidad'] == 0:
+                        k += 1
+                        f_actual = df.iloc[k]
+                        
+                    eventos.append({
+                        'Tipo': 'CARGA',
+                        'PI': f_estable['Fecha Hora'],
+                        'PF': f_actual['Fecha Hora'],
+                        'Litros': round(f_actual['Total combustible'] - f_estable['Total combustible'], 2),
+                        'Odo': f_actual['Odometro']
+                    })
+                    break
+                k += 1
+            i = k
+        else:
+            i += 1
+
+    # --- BALANCE Y RENDIMIENTO ---
     distancia_total = (df['Odometro'].max() - df['Odometro'].min()) / 1000
     comb_inicial = df['Total combustible'].iloc[0]
     comb_final = df['Total combustible'].iloc[-1]
@@ -81,28 +92,23 @@ def analizar_datos_pro(df):
     total_cargado = df_ev[df_ev['Tipo'] == 'CARGA']['Litros'].sum() if not df_ev.empty else 0
     total_robado = abs(df_ev[df_ev['Tipo'] == 'DESCARGA/ROBO']['Litros'].sum()) if not df_ev.empty else 0
     
-    # Consumo total reportado por los tanques
     consumo_total_real = round((comb_inicial + total_cargado) - comb_final, 2)
-    # Consumo que realmente pasó por los inyectores (restando el robo)
     consumo_motor_neto = round(consumo_total_real - total_robado, 2)
     
-    rend_bruto = round(distancia_total / consumo_total_real, 2) if consumo_total_real > 0 else 0
-    rend_neto = round(distancia_total / consumo_motor_neto, 2) if consumo_motor_neto > 0 else 0
-
     resumen = {
         'Distancia (Km)': f"{distancia_total:,.2f}",
         'Inicial (L)': f"{comb_inicial:,.2f}",
         'Cargado (L)': f"{total_cargado:,.2f}",
         'Robado (L)': f"{total_robado:,.2f}",
-        'Rend. Bruto': f"{rend_bruto} km/l",
-        'Rend. Neto': f"{rend_neto} km/l"
+        'Rend. Bruto': f"{round(distancia_total/consumo_total_real,2) if consumo_total_real > 0 else 0} km/l",
+        'Rend. Neto': f"{round(distancia_total/consumo_motor_neto,2) if consumo_motor_neto > 0 else 0} km/l"
     }
     
     return resumen, df_ev
 
 # --- INTERFAZ ---
-st.set_page_config(page_title="Auditor Kenworth Pro", layout="wide")
-st.title("📊 Auditoría de Combustible v2.0")
+st.set_page_config(page_title="Auditor Kenworth v3", layout="wide")
+st.title("📊 Auditoría Anti-Oleaje y Movimiento")
 
 file = st.file_uploader("Sube tu reporte CSV", type=['csv'])
 
@@ -111,18 +117,15 @@ if file:
         df_raw = pd.read_csv(file)
         resumen, eventos = analizar_datos_pro(df_raw)
         
-        st.subheader("📋 Balance de Masa Total")
+        st.subheader("📋 Balance Final")
         cols = st.columns(len(resumen))
         for i, (k, v) in enumerate(resumen.items()):
             cols[i].metric(k, v)
         
-        st.subheader("🚩 Ventanas de Eventos Detectadas")
+        st.subheader("🚩 Eventos Validados (Sin Movimiento ni Oleaje)")
         if not eventos.empty:
-            # Ordenar por fecha para que sea legible
-            eventos = eventos.sort_values('PI')
-            st.table(eventos[['Tipo', 'PI', 'PF', 'Litros', 'Odo']])
+            st.table(eventos.sort_values('PI'))
         else:
-            st.info("No se detectaron eventos sospechosos.")
-            
+            st.info("No se detectaron eventos sospechosos bajo las reglas de estabilidad.")
     except Exception as e:
-        st.error(f"Error crítico: {e}")
+        st.error(f"Error: {e}")
