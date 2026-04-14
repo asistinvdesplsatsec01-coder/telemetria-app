@@ -9,7 +9,7 @@ def analizar_datos_pro(df):
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
     # --- Parámetros de Auditoría ---
-    UMBRAL_ROBO = -5.0  
+    UMBRAL_ROBO = -4.0  
     UMBRAL_CARGA = 15.0 
     MINUTOS_ESTABILIZACION = 3 
     
