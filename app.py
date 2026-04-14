@@ -9,8 +9,8 @@ def analizar_datos_pro(df):
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
     # --- Parámetros de Auditoría ---
-    UMBRAL_ANOMALIA = 3.0 # Diferencia mínima neta para reportar la parada
-    UMBRAL_RUIDO_INICIAL = 2.0 # Si el incremento al detenerse es < 2L, se ignora
+    UMBRAL_ANOMALIA = 3.0       # Diferencia mínima neta para reportar el evento
+    UMBRAL_RUIDO_INICIAL = 2.0  # Si el incremento al detenerse es < 2L, se ignora
     
     eventos = []
     i = 0
@@ -22,19 +22,19 @@ def analizar_datos_pro(df):
             idx_inicio = i
             f_inicio = df.iloc[i]
             
-            # --- NUEVA REGLA: Validación de incremento inmediato ---
-            # Si hay un registro siguiente todavía en la parada, verificamos el salto inicial
+            # --- REGLA DE FILTRO INICIAL ---
+            # Verificamos el salto inmediato después de detenerse
             proximo_idx = i + 1
             if proximo_idx < total_filas:
                 f_siguiente = df.iloc[proximo_idx]
                 salto_inmediato = f_siguiente['Total combustible'] - f_inicio['Total combustible']
                 
-                # Si el incremento es pequeño (< 2L), recalibramos el inicio para ignorar ese "oleaje"
+                # Si el incremento es pequeño (< 2L), lo ignoramos moviendo el inicio
                 if 0 < salto_inmediato < UMBRAL_RUIDO_INICIAL:
                     f_inicio = f_siguiente
                     idx_inicio = proximo_idx
 
-            # Buscar el final de la parada
+            # Buscar el final de la parada (cuando hay movimiento o cambio de odo)
             j = idx_inicio + 1
             while j < total_filas:
                 f_act = df.iloc[j]
@@ -51,7 +51,7 @@ def analizar_datos_pro(df):
             comb_fin_ventana = f_final['Total combustible']
             diff_neta = round(comb_fin_ventana - comb_ini_ventana, 2)
 
-            # Registro de evento si supera el umbral de anomalía
+            # Registro de evento si supera el umbral
             if abs(diff_neta) >= UMBRAL_ANOMALIA:
                 tipo = "CARGA" if diff_neta > 0 else "DESCARGA/ROBO"
                 eventos.append({
@@ -68,7 +68,7 @@ def analizar_datos_pro(df):
         else:
             i += 1
 
-    # --- CÁLCULOS FINALES ---
+    # --- CÁLCULOS FINALES (CORREGIDOS) ---
     dist_total = (df['Odometro'].max() - df['Odometro'].min()) / 1000
     comb_i, comb_f = df['Total combustible'].iloc[0], df['Total combustible'].iloc[-1]
     
@@ -76,14 +76,16 @@ def analizar_datos_pro(df):
     total_cargado = df_ev[df_ev['Diferencia (L)'] > 0]['Diferencia (L)'].sum() if not df_ev.empty else 0
     total_robado = abs(df_ev[df_ev['Diferencia (L)'] < 0]['Diferencia (L)'].sum()) if not df_ev.empty else 0
     
+    # Consumo Real: Gasto total del tanque considerando recargas
     consumo_real = round((comb_i + total_cargado) - comb_f, 2)
+    # Consumo Neto: Solo lo que debería haber consumido el motor (restando robos)
     consumo_neto = round(consumo_real - total_robado, 2)
 
     resumen_visual = [
         {"label": "Distancia (Km)", "valor": f"{dist_total:,.2f}", "formula": "Odo Final - Odo Inicial"},
         {"label": "Total Cargado (L)", "valor": f"{total_cargado:,.2f}", "formula": "Suma de balances (+) en paradas"},
         {"label": "Total Robado (L)", "valor": f"{total_robado:,.2f}", "formula": "Suma de balances (-) en paradas"},
-        {"label": "Consumo Real (L)", "valor": f"{consumo_total_real:,.2f}", "formula": "(Ini + Cargas) - Final"},
+        {"label": "Consumo Real (L)", "valor": f"{consumo_real:,.2f}", "formula": "(Ini + Cargas) - Final"},
         {"label": "Rend. Neto", "valor": f"{round(dist_total/consumo_neto, 2) if consumo_neto > 0 else 0} km/l", "formula": "Km / (Consumo - Robos)"}
     ]
     
@@ -93,7 +95,7 @@ def analizar_datos_pro(df):
 st.set_page_config(page_title="Reporte de Combustible", layout="wide")
 
 st.title("📋 Reporte de Combustible")
-st.write("Auditoría con filtro de ruido inicial (< 2L) y balance neto por parada.")
+st.write("Análisis de balance neto con filtro de ruido inicial (< 2L).")
 
 file = st.file_uploader("Subir archivo CSV", type=['csv'])
 
@@ -116,4 +118,4 @@ if file:
             st.info("No se detectaron variaciones significativas.")
             
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error en el proceso: {e}")
