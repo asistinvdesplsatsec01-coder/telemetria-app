@@ -9,8 +9,8 @@ def analizar_datos_pro(df):
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
     # --- Parámetros de Auditoría ---
-    UMBRAL_ROBO = -4.0  
-    UMBRAL_CARGA = 5.0 
+    UMBRAL_ROBO = -5.0  
+    UMBRAL_CARGA = 15.0 
     MINUTOS_ESTABILIZACION = 3 
     
     eventos = []
@@ -100,7 +100,7 @@ with col_reglas:
         st.markdown("""
         1. **Filtro de Movimiento:** Velocidad = 0 y Odómetro sin cambios.
         2. **Anti-Oleaje:** Espera de 3 min tras detenerse para estabilizar lectura.
-        3. **Umbrales:** Robos > 4L | Cargas > 5L.
+        3. **Umbrales:** Robos > 5L | Cargas > 15L.
         """)
 
 file = st.file_uploader("Subir archivo CSV", type=['csv'])
