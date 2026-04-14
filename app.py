@@ -3,93 +3,79 @@ import pandas as pd
 import numpy as np
 
 def analizar_datos_pro(df):
+    # Limpieza básica
     df.columns = df.columns.str.strip()
     df['Fecha Hora'] = pd.to_datetime(df['Fecha Hora'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
-    # --- Parámetros de Auditoría Sensible ---
-    UMBRAL_ROBO_ACUMULADO = -3.0 # Si en un periodo parado pierde > 3L, es robo
-    MINUTOS_ESTABILIZACION = 1   # Reducido para no ignorar inicios de robo
+    # Parámetros de sensibilidad
+    UMBRAL_ANOMALIA = 3.0 # Diferencia mínima de litros para reportar la ventana
     
     eventos = []
     i = 0
-    
-    while i < len(df) - 1:
-        f_inicio = df.iloc[i]
-        odo_cambio = abs(df.iloc[i]['Odometro'] - df.iloc[i-1]['Odometro']) if i > 0 else 0
-        
-        # Si el camión está estático (Velocidad 0 y Odo quieto)
-        if f_inicio['Velocidad'] == 0 and odo_cambio <= 1:
-            inicio_ventana = f_inicio['Fecha Hora']
-            comb_inicial_ventana = f_inicio['Total combustible']
+    total_filas = len(df)
+
+    while i < total_filas:
+        # 1. Detectar inicio de parada (Velocidad 0)
+        if df.iloc[i]['Velocidad'] == 0:
+            idx_inicio = i
+            f_inicio = df.iloc[i]
             
-            k = i + 1
-            while k < len(df):
-                f_actual = df.iloc[k]
-                odo_k = abs(f_actual['Odometro'] - df.iloc[k-1]['Odometro'])
-                
-                # Si se mueve, cerramos la ventana de análisis estático
-                if f_actual['Velocidad'] > 2 or odo_k > 1:
+            # 2. Buscar el final de la parada (cuando vuelve a haber velocidad o cambia odo)
+            j = i + 1
+            while j < total_filas:
+                f_act = df.iloc[j]
+                # Si el camión se mueve (velocidad > 2 o cambio de odómetro real)
+                odo_diff = f_act['Odometro'] - df.iloc[j-1]['Odometro']
+                if f_act['Velocidad'] > 2 or odo_diff > 1:
                     break
+                j += 1
+            
+            idx_final = j - 1
+            f_final = df.iloc[idx_final]
+            
+            # 3. ANÁLISIS DE LA VENTANA (Balance de masa en la parada)
+            comb_inicial_evento = f_inicio['Total combustible']
+            comb_final_evento = f_final['Total combustible']
+            diferencia_neta = round(comb_final_evento - comb_inicial_evento, 2)
+
+            # Si hubo una variación importante durante la parada
+            if abs(diferencia_neta) >= UMBRAL_ANOMALIA:
+                # Determinamos el tipo según el balance neto
+                tipo_evento = "CARGA" if diferencia_neta > 0 else "DESCARGA/ROBO"
                 
-                # Calculamos la diferencia neta desde que se detuvo
-                diff_neta = f_actual['Total combustible'] - comb_inicial_ventana
-                
-                # DETECCIÓN DE ROBO (Incluso con incrementos/decrementos simultáneos)
-                if diff_neta <= UMBRAL_ROBO_ACUMULADO:
-                    # Buscamos hasta que el nivel deje de bajar o el camión se mueva
-                    m = k
-                    while m < len(df) - 1:
-                        f_sig = df.iloc[m+1]
-                        if f_sig['Velocidad'] > 2 or (f_sig['Total combustible'] > f_actual['Total combustible'] + 1): # +1L de margen ruido
-                            break
-                        f_actual = f_sig
-                        m += 1
-                    
-                    eventos.append({
-                        'Tipo': 'DESCARGA/ROBO',
-                        'PI': inicio_ventana,
-                        'PF': f_actual['Fecha Hora'],
-                        'Litros': round(f_actual['Total combustible'] - comb_inicial_ventana, 2),
-                        'Odo': f_actual['Odometro']
-                    })
-                    k = m # Saltamos al final del evento
-                    break
-                
-                # DETECCIÓN DE CARGA
-                elif diff_neta >= 15.0:
-                    eventos.append({
-                        'Tipo': 'CARGA',
-                        'PI': inicio_ventana,
-                        'PF': f_actual['Fecha Hora'],
-                        'Litros': round(diff_neta, 2),
-                        'Odo': f_actual['Odometro']
-                    })
-                    break
-                k += 1
-            i = k
+                eventos.append({
+                    'Tipo': tipo_evento,
+                    'PI': f_inicio['Fecha Hora'],
+                    'PF': f_final['Fecha Hora'],
+                    'L. Inicial': comb_inicial_evento,
+                    'L. Final': comb_final_evento,
+                    'Diferencia (L)': diferencia_neta,
+                    'Odo': f_final['Odometro']
+                })
+            
+            i = j # Continuar buscando después de esta parada
         else:
             i += 1
 
-    # --- BALANCE Y CÁLCULOS ---
-    dist_i, dist_f = df['Odometro'].min(), df['Odometro'].max()
-    distancia_total = (dist_f - dist_i) / 1000
+    # --- BALANCE GENERAL DEL REPORTE ---
+    dist_total = (df['Odometro'].max() - df['Odometro'].min()) / 1000
     comb_i, comb_f = df['Total combustible'].iloc[0], df['Total combustible'].iloc[-1]
     
     df_ev = pd.DataFrame(eventos)
-    total_cargado = df_ev[df_ev['Tipo'] == 'CARGA']['Litros'].sum() if not df_ev.empty else 0
-    total_robado = abs(df_ev[df_ev['Tipo'] == 'DESCARGA/ROBO']['Litros'].sum()) if not df_ev.empty else 0
+    total_cargado = df_ev[df_ev['Diferencia (L)'] > 0]['Diferencia (L)'].sum() if not df_ev.empty else 0
+    total_robado = abs(df_ev[df_ev['Diferencia (L)'] < 0]['Diferencia (L)'].sum()) if not df_ev.empty else 0
     
+    # Consumo Real: Lo que bajó el tanque + lo que se cargó
     consumo_real = round((comb_i + total_cargado) - comb_f, 2)
     consumo_neto = round(consumo_real - total_robado, 2)
 
     resumen_visual = [
-        {"label": "Distancia (Km)", "valor": f"{distancia_total:,.2f}", "formula": "Odo Final - Odo Inicial"},
-        {"label": "Cargado (L)", "valor": f"{total_cargado:,.2f}", "formula": "Suma de eventos > 15L"},
-        {"label": "Robado (L)", "valor": f"{total_robado:,.2f}", "formula": "Diferencia neta en parada"},
+        {"label": "Distancia (Km)", "valor": f"{dist_total:,.2f}", "formula": "Odo Final - Odo Inicial"},
+        {"label": "Total Cargado (L)", "valor": f"{total_cargado:,.2f}", "formula": "Suma de diferencias (+) en paradas"},
+        {"label": "Total Robado (L)", "valor": f"{total_robado:,.2f}", "formula": "Suma de diferencias (-) en paradas"},
         {"label": "Consumo Real (L)", "valor": f"{consumo_real:,.2f}", "formula": "(Ini + Cargas) - Final"},
-        {"label": "Rend. Bruto", "valor": f"{round(distancia_total/consumo_real,2) if consumo_real > 0 else 0} km/l", "formula": "Km / Consumo Real"},
-        {"label": "Rend. Neto", "valor": f"{round(distancia_total/consumo_neto,2) if consumo_neto > 0 else 0} km/l", "formula": "Km / (Consumo Real - Robos)"}
+        {"label": "Rend. Neto", "valor": f"{round(distancia_total/consumo_neto,2) if consumo_neto > 0 else 0} km/l", "formula": "Km / (Consumo - Robos)"}
     ]
     
     return resumen_visual, df_ev
@@ -97,17 +83,18 @@ def analizar_datos_pro(df):
 # --- INTERFAZ ---
 st.set_page_config(page_title="Reporte de Combustible", layout="wide")
 
-col_titulo, col_reglas = st.columns([2, 1])
-with col_titulo:
+col_t, col_r = st.columns([2, 1])
+with col_t:
     st.title("📋 Reporte de Combustible")
-    st.write("Detección avanzada de extracciones y balance de masa.")
+    st.write("Análisis por Balance de Ventana en Parada (Neto Inicial vs Final).")
 
-with col_reglas:
-    with st.expander("🔍 Reglas de Validación", expanded=True):
+with col_r:
+    with st.expander("🔍 Lógica de Auditoría", expanded=True):
         st.markdown("""
-        1. **Filtro Estático:** Solo se analiza si Velocidad = 0 y el Odómetro no cambia.
-        2. **Diferencia Neta:** Se mide la pérdida acumulada desde el minuto 1 de la detención.
-        3. **Umbral de Robo:** Cualquier caída neta > 3L en estado estático se registra como evento.
+        - **Ventana de Análisis:** Se abre automáticamente cuando la Velocidad es 0.
+        - **Balance Neto:** Se compara el combustible al inicio de la parada contra el final.
+        - **Anomalía:** Si la diferencia neta es > 3L o < -3L, se registra el evento.
+        - **Caso Mixto:** Si cargan y roban en la misma parada, el reporte mostrará el **resultado neto** de esa ventana.
         """)
 
 file = st.file_uploader("Subir archivo CSV", type=['csv'])
@@ -124,10 +111,11 @@ if file:
                 st.metric(label=item["label"], value=item["valor"])
                 st.caption(f"fx: {item['formula']}")
         
-        st.subheader("🚩 Ventanas Detalladas (PI / PF)")
+        st.subheader("🚩 Detalle de Eventos por Ventana (Diferencia Neta)")
         if not eventos.empty:
-            st.table(eventos.sort_values('PI'))
+            # Mostramos las columnas clave para que el usuario vea el balance
+            st.table(eventos[['Tipo', 'PI', 'PF', 'L. Inicial', 'L. Final', 'Diferencia (L)', 'Odo']])
         else:
-            st.info("No se detectaron anomalías con los parámetros actuales.")
+            st.info("No se detectaron variaciones netas en las paradas.")
     except Exception as e:
         st.error(f"Error: {e}")
