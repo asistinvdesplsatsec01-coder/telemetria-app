@@ -9,79 +9,82 @@ def analizar_datos_pro(df):
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
     # --- Parámetros de Auditoría ---
-    UMBRAL_ROBO = -2.0  
-    UMBRAL_CARGA = 10.0 
-    MINUTOS_ESTABILIZACION = 1 
+    UMBRAL_ANOMALIA = 3.0 # Diferencia mínima neta para reportar la parada
+    UMBRAL_RUIDO_INICIAL = 2.0 # Si el incremento al detenerse es < 2L, se ignora
     
     eventos = []
     i = 0
+    total_filas = len(df)
     
-    while i < len(df) - 1:
-        f_inicio = df.iloc[i]
-        odo_cambio = abs(df.iloc[i]['Odometro'] - df.iloc[i-1]['Odometro']) if i > 0 else 0
-        
-        if f_inicio['Velocidad'] == 0 and odo_cambio <= 1:
-            hora_estabilizada = f_inicio['Fecha Hora'] + pd.Timedelta(minutes=MINUTOS_ESTABILIZACION)
-            j = i
-            while j < len(df) - 1 and df.iloc[j]['Fecha Hora'] < hora_estabilizada:
+    while i < total_filas:
+        # Detectar cuando el vehículo se detiene (Velocidad 0)
+        if df.iloc[i]['Velocidad'] == 0:
+            idx_inicio = i
+            f_inicio = df.iloc[i]
+            
+            # --- NUEVA REGLA: Validación de incremento inmediato ---
+            # Si hay un registro siguiente todavía en la parada, verificamos el salto inicial
+            proximo_idx = i + 1
+            if proximo_idx < total_filas:
+                f_siguiente = df.iloc[proximo_idx]
+                salto_inmediato = f_siguiente['Total combustible'] - f_inicio['Total combustible']
+                
+                # Si el incremento es pequeño (< 2L), recalibramos el inicio para ignorar ese "oleaje"
+                if 0 < salto_inmediato < UMBRAL_RUIDO_INICIAL:
+                    f_inicio = f_siguiente
+                    idx_inicio = proximo_idx
+
+            # Buscar el final de la parada
+            j = idx_inicio + 1
+            while j < total_filas:
+                f_act = df.iloc[j]
+                odo_diff = abs(f_act['Odometro'] - df.iloc[j-1]['Odometro'])
+                if f_act['Velocidad'] > 2 or odo_diff > 1:
+                    break
                 j += 1
             
-            if j >= len(df) - 1: break
+            idx_final = j - 1
+            f_final = df.iloc[idx_final]
             
-            f_estable = df.iloc[j]
-            k = j + 1
-            while k < len(df):
-                f_actual = df.iloc[k]
-                cambio_odo_k = abs(f_actual['Odometro'] - df.iloc[k-1]['Odometro'])
-                if f_actual['Velocidad'] > 2 or cambio_odo_k > 1:
-                    break
-                
-                diff_acumulada = f_actual['Total combustible'] - f_estable['Total combustible']
-                
-                if diff_acumulada <= UMBRAL_ROBO:
-                    while k < len(df)-1 and df.iloc[k+1]['Total combustible'] <= f_actual['Total combustible'] and df.iloc[k+1]['Velocidad'] == 0:
-                        k += 1
-                        f_actual = df.iloc[k]
-                    eventos.append({'Tipo': 'DESCARGA/ROBO', 'PI': f_estable['Fecha Hora'], 'PF': f_actual['Fecha Hora'], 'Litros': round(f_actual['Total combustible'] - f_estable['Total combustible'], 2), 'Odo': f_actual['Odometro']})
-                    break
-                elif diff_acumulada >= UMBRAL_CARGA:
-                    while k < len(df)-1 and df.iloc[k+1]['Total combustible'] >= f_actual['Total combustible'] and df.iloc[k+1]['Velocidad'] == 0:
-                        k += 1
-                        f_actual = df.iloc[k]
-                    eventos.append({'Tipo': 'CARGA', 'PI': f_estable['Fecha Hora'], 'PF': f_actual['Fecha Hora'], 'Litros': round(f_actual['Total combustible'] - f_estable['Total combustible'], 2), 'Odo': f_actual['Odometro']})
-                    break
-                k += 1
-            i = k
+            # --- BALANCE NETO DE LA VENTANA ---
+            comb_ini_ventana = f_inicio['Total combustible']
+            comb_fin_ventana = f_final['Total combustible']
+            diff_neta = round(comb_fin_ventana - comb_ini_ventana, 2)
+
+            # Registro de evento si supera el umbral de anomalía
+            if abs(diff_neta) >= UMBRAL_ANOMALIA:
+                tipo = "CARGA" if diff_neta > 0 else "DESCARGA/ROBO"
+                eventos.append({
+                    'Tipo': tipo,
+                    'PI': f_inicio['Fecha Hora'],
+                    'PF': f_final['Fecha Hora'],
+                    'L. Inicial': comb_ini_ventana,
+                    'L. Final': comb_fin_ventana,
+                    'Diferencia (L)': diff_neta,
+                    'Odo': f_final['Odometro']
+                })
+            
+            i = j # Continuar después de la parada
         else:
             i += 1
 
-    # --- CÁLCULOS FINALES CON FÓRMULAS ---
-    dist_i = df['Odometro'].min()
-    dist_f = df['Odometro'].max()
-    distancia_total = (dist_f - dist_i) / 1000
-    
-    comb_i = df['Total combustible'].iloc[0]
-    comb_f = df['Total combustible'].iloc[-1]
+    # --- CÁLCULOS FINALES ---
+    dist_total = (df['Odometro'].max() - df['Odometro'].min()) / 1000
+    comb_i, comb_f = df['Total combustible'].iloc[0], df['Total combustible'].iloc[-1]
     
     df_ev = pd.DataFrame(eventos)
-    total_cargado = df_ev[df_ev['Tipo'] == 'CARGA']['Litros'].sum() if not df_ev.empty else 0
-    total_robado = abs(df_ev[df_ev['Tipo'] == 'DESCARGA/ROBO']['Litros'].sum()) if not df_ev.empty else 0
+    total_cargado = df_ev[df_ev['Diferencia (L)'] > 0]['Diferencia (L)'].sum() if not df_ev.empty else 0
+    total_robado = abs(df_ev[df_ev['Diferencia (L)'] < 0]['Diferencia (L)'].sum()) if not df_ev.empty else 0
     
-    # Consumo Real: Lo que bajó el tanque considerando lo que se le puso
-    consumo_total_real = round((comb_i + total_cargado) - comb_f, 2)
-    # Consumo Neto: Consumo total menos lo que no pasó por el motor (robos)
-    consumo_motor_neto = round(consumo_total_real - total_robado, 2)
-    
-    rend_bruto = round(distancia_total / consumo_total_real, 2) if consumo_total_real > 0 else 0
-    rend_neto = round(distancia_total / consumo_motor_neto, 2) if consumo_motor_neto > 0 else 0
+    consumo_real = round((comb_i + total_cargado) - comb_f, 2)
+    consumo_neto = round(consumo_real - total_robado, 2)
 
     resumen_visual = [
-        {"label": "Distancia (Km)", "valor": f"{distancia_total:,.2f}", "formula": "Odo Final - Odo Inicial"},
-        {"label": "Cargado (L)", "valor": f"{total_cargado:,.2f}", "formula": "Suma de eventos > 15L"},
-        {"label": "Robado (L)", "valor": f"{total_robado:,.2f}", "formula": "Suma de eventos < -5L"},
+        {"label": "Distancia (Km)", "valor": f"{dist_total:,.2f}", "formula": "Odo Final - Odo Inicial"},
+        {"label": "Total Cargado (L)", "valor": f"{total_cargado:,.2f}", "formula": "Suma de balances (+) en paradas"},
+        {"label": "Total Robado (L)", "valor": f"{total_robado:,.2f}", "formula": "Suma de balances (-) en paradas"},
         {"label": "Consumo Real (L)", "valor": f"{consumo_total_real:,.2f}", "formula": "(Ini + Cargas) - Final"},
-        {"label": "Rend. Bruto", "valor": f"{rend_bruto} km/l", "formula": "Km / Consumo Real"},
-        {"label": "Rend. Neto", "valor": f"{rend_neto} km/l", "formula": "Km / (Consumo Real - Robos)"}
+        {"label": "Rend. Neto", "valor": f"{round(dist_total/consumo_neto, 2) if consumo_neto > 0 else 0} km/l", "formula": "Km / (Consumo - Robos)"}
     ]
     
     return resumen_visual, df_ev
@@ -89,19 +92,8 @@ def analizar_datos_pro(df):
 # --- INTERFAZ ---
 st.set_page_config(page_title="Reporte de Combustible", layout="wide")
 
-col_titulo, col_reglas = st.columns([2, 1])
-
-with col_titulo:
-    st.title("📋 Reporte de Combustible")
-    st.write("Análisis técnico de rendimiento y eventos detectados.")
-
-with col_reglas:
-    with st.expander("🔍 Reglas de Validación", expanded=True):
-        st.markdown("""
-        1. **Filtro de Movimiento:** Velocidad = 0 y Odómetro sin cambios.
-        2. **Anti-Oleaje:** Espera de 3 min tras detenerse para estabilizar lectura.
-        3. **Umbrales:** Robos > 5L | Cargas > 15L.
-        """)
+st.title("📋 Reporte de Combustible")
+st.write("Auditoría con filtro de ruido inicial (< 2L) y balance neto por parada.")
 
 file = st.file_uploader("Subir archivo CSV", type=['csv'])
 
@@ -111,18 +103,17 @@ if file:
         resumen, eventos = analizar_datos_pro(df_raw)
         
         st.subheader("📊 Balance General")
-        # Mostrar métricas con sus fórmulas debajo
         cols = st.columns(len(resumen))
         for i, item in enumerate(resumen):
             with cols[i]:
                 st.metric(label=item["label"], value=item["valor"])
                 st.caption(f"fx: {item['formula']}")
         
-        st.subheader("🚩 Ventanas Detalladas (PI / PF)")
+        st.subheader("🚩 Detalle de Anomalías")
         if not eventos.empty:
-            st.table(eventos.sort_values('PI'))
+            st.table(eventos.sort_values('PI')[['Tipo', 'PI', 'PF', 'L. Inicial', 'L. Final', 'Diferencia (L)', 'Odo']])
         else:
-            st.info("No se detectaron anomalías.")
+            st.info("No se detectaron variaciones significativas.")
             
     except Exception as e:
         st.error(f"Error: {e}")
