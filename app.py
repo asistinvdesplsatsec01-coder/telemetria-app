@@ -3,30 +3,32 @@ import pandas as pd
 import numpy as np
 
 def analizar_datos_pro(df):
-    # Estandarización de columnas (para que funcione con cualquier CSV de tu sistema)
-    df['Fecha Hora'] = pd.to_datetime(df['Fecha Hora'])
-    df = df.sort_values('Fecha Hora')
+    # 1. Limpieza de columnas (Eliminar espacios en blanco en los nombres de columna)
+    df.columns = df.columns.str.strip()
+    
+    # 2. Conversión flexible de fecha (Corrige el error del Traceback)
+    df['Fecha Hora'] = pd.to_datetime(df['Fecha Hora'], dayfirst=True, errors='coerce')
+    df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
     # --- Parámetros de Auditoría ---
-    UMBRAL_ROBO = -2.0  # Mínimo de litros para marcar como robo
-    UMBRAL_CARGA = 15.0 # Mínimo de litros para marcar como carga
-    TASA_MAX_RALENTI = 0.08 # L/min (Consumo máximo físico de un Kenworth 2015 parado)
+    UMBRAL_ROBO = -2.0  
+    UMBRAL_CARGA = 15.0 
+    TASA_MAX_RALENTI = 0.08 
     
-    # Cálculos de deltas
+    # 3. Cálculos de deltas
     df['diff_l'] = df['Total combustible'].diff()
     df['diff_t'] = df['Fecha Hora'].diff().dt.total_seconds() / 60
-    df['dist_km'] = df['Odometro'].diff() / 1000 # Asumiendo metros en el CSV
-    df['tasa'] = df['diff_l'] / df['diff_t']
+    # Evitar división por cero en el primer registro
+    df['tasa'] = np.where(df['diff_t'] > 0, df['diff_l'] / df['diff_t'], 0)
 
     eventos = []
     evento_actual = None
     
-    # Lógica de detección de Ventanas (PI/PF)
     for i in range(1, len(df)):
         f = df.iloc[i]
         ant = df.iloc[i-1]
         
-        # 1. Detección de Descargas/Robos
+        # Lógica de Robos
         if (f['Velocidad'] == 0) and (f['diff_l'] < -0.1) and (abs(f['tasa']) > TASA_MAX_RALENTI):
             if evento_actual is None:
                 evento_actual = {'Tipo': 'DESCARGA/ROBO', 'PI': ant['Fecha Hora'], 'L_Ini': ant['Total combustible'], 'Odo': f['Odometro']}
@@ -40,16 +42,12 @@ def analizar_datos_pro(df):
                     eventos.append(evento_actual)
                 evento_actual = None
 
-        # 2. Detección de Cargas
+        # Lógica de Cargas
         if f['diff_l'] > UMBRAL_CARGA:
             eventos.append({
-                'Tipo': 'CARGA',
-                'PI': ant['Fecha Hora'],
-                'PF': f['Fecha Hora'],
-                'L_Ini': ant['Total combustible'],
-                'L_Fin': f['Total combustible'],
-                'Litros': round(f['diff_l'], 2),
-                'Odo': f['Odometro']
+                'Tipo': 'CARGA', 'PI': ant['Fecha Hora'], 'PF': f['Fecha Hora'], 
+                'L_Ini': ant['Total combustible'], 'L_Fin': f['Total combustible'], 
+                'Litros': round(f['diff_l'], 2), 'Odo': f['Odometro']
             })
 
     # --- CÁLCULO DE VALORES TOTALES ---
@@ -59,45 +57,48 @@ def analizar_datos_pro(df):
     
     df_ev = pd.DataFrame(eventos)
     total_cargado = df_ev[df_ev['Tipo'] == 'CARGA']['Litros'].sum() if not df_ev.empty else 0
-    total_robado = df_ev[df_ev['Tipo'] == 'DESCARGA/ROBO']['Litros'].sum() if not df_ev.empty else 0
+    total_robado = abs(df_ev[df_ev['Tipo'] == 'DESCARGA/ROBO']['Litros'].sum()) if not df_ev.empty else 0
     
-    consumo_total_real = (comb_inicial + total_cargado) - comb_final
-    consumo_motor_neto = consumo_total_real + total_robado # Sumamos el negativo del robo
+    consumo_total_real = round((comb_inicial + total_cargado) - comb_final, 2)
+    # El consumo neto del motor es el total menos lo que se robaron
+    consumo_motor_neto = round(consumo_total_real - total_robado, 2)
     
-    rendimiento_bruto = distancia_total / consumo_total_real if consumo_total_real > 0 else 0
-    rendimiento_neto = distancia_total / consumo_motor_neto if consumo_motor_neto > 0 else 0
+    rend_bruto = round(distancia_total / consumo_total_real, 2) if consumo_total_real > 0 else 0
+    rend_neto = round(distancia_total / consumo_motor_neto, 2) if consumo_motor_neto > 0 else 0
 
     resumen = {
-        'Distancia Total (Km)': round(distancia_total, 2),
-        'Combustible Inicial (L)': round(comb_inicial, 2),
-        'Total Cargado (L)': round(total_cargado, 2),
-        'Total Descargas (L)': round(total_robado, 2),
-        'Consumo Total Real (L)': round(consumo_total_real, 2),
-        'Rendimiento Bruto (Km/L)': round(rendimiento_bruto, 2),
-        'Rendimiento Neto (Sin robos) (Km/L)': round(rendimiento_neto, 2)
+        'Distancia (Km)': distancia_total,
+        'Inicial (L)': comb_inicial,
+        'Cargado (L)': total_cargado,
+        'Robado (L)': total_robado,
+        'Consumo Real (L)': consumo_total_real,
+        'Rend. Bruto': rend_bruto,
+        'Rend. Neto': rend_neto
     }
     
     return resumen, df_ev
 
-# --- INTERFAZ STREAMLIT ---
-st.set_page_config(page_title="Auditor de Combustible Pro", layout="wide")
-st.title("📊 Auditoría de Combustible y Telemetría")
+# --- INTERFAZ ---
+st.set_page_config(page_title="Auditor Kenworth Pro", layout="wide")
+st.title("📊 Auditoría de Combustible")
 
-file = st.file_uploader("Arrastra tu reporte CSV aquí", type=['csv'])
+file = st.file_uploader("Sube tu CSV", type=['csv'])
 
 if file:
-    df_raw = pd.read_csv(file)
-    resumen, eventos = analizar_datos_pro(df_raw)
-    
-    # Mostrar Totales en Columnas
-    st.subheader("📋 Resumen General")
-    cols = st.columns(len(resumen))
-    for i, (k, v) in enumerate(resumen.items()):
-        cols[i].metric(k, v)
-    
-    # Mostrar Tabla de Eventos PI/PF
-    st.subheader("🚩 Eventos de Carga y Descarga (PI / PF)")
-    if not eventos.empty:
-        st.dataframe(eventos[['Tipo', 'PI', 'PF', 'Litros', 'Odo']], use_container_width=True)
-    else:
-        st.info("No se detectaron anomalías.")
+    try:
+        df_raw = pd.read_csv(file)
+        resumen, eventos = analizar_datos_pro(df_raw)
+        
+        st.subheader("📋 Resumen de Operación")
+        c = st.columns(len(resumen))
+        for i, (k, v) in enumerate(resumen.items()):
+            c[i].metric(k, v)
+        
+        st.subheader("🚩 Detalle de Eventos (PI / PF)")
+        if not eventos.empty:
+            st.dataframe(eventos[['Tipo', 'PI', 'PF', 'Litros', 'Odo']], use_container_width=True)
+        else:
+            st.info("No se detectaron robos ni cargas en este archivo.")
+    except Exception as e:
+        st.error(f"Error al procesar el archivo: {e}")
+        st.info("Asegúrate de que el CSV tenga las columnas: Fecha Hora, Total combustible, Velocidad, Odometro")
