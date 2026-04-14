@@ -10,7 +10,7 @@ def analizar_datos_pro(df):
     
     # --- Parámetros de Auditoría ---
     UMBRAL_ROBO = -4.0  
-    UMBRAL_CARGA = 15.0 
+    UMBRAL_CARGA = 5.0 
     MINUTOS_ESTABILIZACION = 3 
     
     eventos = []
@@ -77,7 +77,7 @@ def analizar_datos_pro(df):
 
     resumen_visual = [
         {"label": "Distancia (Km)", "valor": f"{distancia_total:,.2f}", "formula": "Odo Final - Odo Inicial"},
-        {"label": "Cargado (L)", "valor": f"{total_cargado:,.2f}", "formula": "Suma de eventos > 15L"},
+        {"label": "Cargado (L)", "valor": f"{total_cargado:,.2f}", "formula": "Suma de eventos > 5L"},
         {"label": "Robado (L)", "valor": f"{total_robado:,.2f}", "formula": "Suma de eventos < -4L"},
         {"label": "Consumo Real (L)", "valor": f"{consumo_total_real:,.2f}", "formula": "(Ini + Cargas) - Final"},
         {"label": "Rend. Bruto", "valor": f"{rend_bruto} km/l", "formula": "Km / Consumo Real"},
@@ -100,7 +100,7 @@ with col_reglas:
         st.markdown("""
         1. **Filtro de Movimiento:** Velocidad = 0 y Odómetro sin cambios.
         2. **Anti-Oleaje:** Espera de 3 min tras detenerse para estabilizar lectura.
-        3. **Umbrales:** Robos > 4L | Cargas > 15L.
+        3. **Umbrales:** Robos > 4L | Cargas > 5L.
         """)
 
 file = st.file_uploader("Subir archivo CSV", type=['csv'])
