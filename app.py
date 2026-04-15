@@ -51,7 +51,7 @@ def analizar_datos_pro(df):
                     'Fecha Inicio': f_inicio['Fecha Hora'],
                     'Fecha Fin': f_final['Fecha Hora'],
                     'Tipo': tipo,
-                    'Detalle': f"{diff_neta} L (Balance en parada)",
+                    'Detalle': f"{diff_neta} L ",
                     'Km/L': "N/A",
                     'Distancia (Km)': 0,
                     'L. Inicial': f_inicio['Total combustible'],
