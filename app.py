@@ -10,8 +10,8 @@ def analizar_datos_pro(df):
     
     # --- PARÁMETROS DE AUDITORÍA (Condicionales) ---
     UMBRAL_EVENTO = 10        # Solo eventos >= 10L (Carga o Robo)
-    UMBRAL_RUIDO_INICIAL = 2.0  # Ignorar variaciones < 2L al inicio de parada
-    RENDIMIENTO_MINIMO = 1    # Alerta movimiento si rinde < 1 km/L
+    UMBRAL_RUIDO_INICIAL = 1  # Ignorar variaciones < 1L al inicio de parada
+    RENDIMIENTO_MINIMO = 1.2    # Alerta movimiento si rinde < 1 km/L
     
     eventos_combinados = []
     i = 0
