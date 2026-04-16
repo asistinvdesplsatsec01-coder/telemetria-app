@@ -9,9 +9,9 @@ def analizar_datos_pro(df):
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
     # --- PARÁMETROS DE AUDITORÍA (Condicionales) ---
-    UMBRAL_EVENTO = 15.6        # Solo eventos >= 15.6L (Carga o Robo)
+    UMBRAL_EVENTO = 10        # Solo eventos >= 10L (Carga o Robo)
     UMBRAL_RUIDO_INICIAL = 2.0  # Ignorar variaciones < 2L al inicio de parada
-    RENDIMIENTO_MINIMO = 1.2    # Alerta movimiento si rinde < 1.2 km/L
+    RENDIMIENTO_MINIMO = 1    # Alerta movimiento si rinde < 1 km/L
     
     eventos_combinados = []
     i = 0
