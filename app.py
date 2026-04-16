@@ -9,7 +9,7 @@ def analizar_datos_pro(df):
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
     # --- PARÁMETROS DE AUDITORÍA (Condicionales) ---
-    UMBRAL_EVENTO = 9.0        # Solo eventos >= 9L (Carga o Robo)
+    UMBRAL_EVENTO = 15.6        # Solo eventos >= 15.6L (Carga o Robo)
     UMBRAL_RUIDO_INICIAL = 2.0  # Ignorar variaciones < 2L al inicio de parada
     RENDIMIENTO_MINIMO = 1.2    # Alerta movimiento si rinde < 1.2 km/L
     
@@ -136,7 +136,7 @@ with col_reglas:
     with st.expander("🔍 Reglas de Validación y Condicionales", expanded=True):
         st.markdown(f"""
         **En Parada (Velocidad = 0):**
-        * **Umbral de Evento:** Solo se registran CARGAS o ROBOS si la variación neta es **≥ 9.0 L**.
+        * **Umbral de Evento:** Solo se registran CARGAS o ROBOS si la variación neta es **≥ 15.6 L**.
         * **Filtro de Ruido:** Si el combustible sube < 2L al detenerse, el punto de inicio se desplaza para ignorar el oleaje.
         * **Balance Neto:** Se calcula comparando el nivel exacto al llegar vs. el nivel al salir de la parada.
 
@@ -162,7 +162,7 @@ if file:
             df_eventos = df_eventos.sort_values('Fecha Inicio')
             st.table(df_eventos.style.apply(style_tipo, axis=1))
         else:
-            st.info("No se detectaron eventos (Cargas/Robos ≥ 9L o Rendimientos < 1.2 km/L).")
+            st.info("No se detectaron eventos (Cargas/Robos ≥ 15.6L o Rendimientos < 1.2 km/L).")
             
     except Exception as e:
         st.error(f"Error en el proceso: {e}")
