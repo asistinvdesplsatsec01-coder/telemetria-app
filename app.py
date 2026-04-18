@@ -8,50 +8,59 @@ def analizar_datos_pro(df):
     df['Fecha Hora'] = pd.to_datetime(df['Fecha Hora'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['Fecha Hora']).sort_values('Fecha Hora')
     
-    # --- PARÁMETROS DE AUDITORÍA (Condicionales) ---
-    UMBRAL_EVENTO = 10        # Solo eventos >= 10L (Carga o Robo)
-    UMBRAL_RUIDO_INICIAL = 1  # Ignorar variaciones < 1L al inicio de parada
-    RENDIMIENTO_MINIMO = 1.2    # Alerta movimiento si rinde < 1 km/L
+    # --- PARÁMETROS TÉCNICOS Y REGLAS DE HISTÉRESIS ---
+    UMBRAL_EVENTO = 10        # Regla de 10L para Cargas/Robos [cite: 18, 19]
+    FILTRO_RUIDO = 2.0        # Filtro de 2L para oleaje 
+    RENDIMIENTO_MINIMO = 0.5  # Anomalía Crítica < 0.5 km/L [cite: 22]
+    PERSISTENCIA_MOV = 2      # Registros para confirmar movimiento 
+    HISTERESIS_CIERRE = 2     # Registros en 0 para cerrar tramo [cite: 17]
+    V_PARADA = 2              # Velocidad umbral parada 
+    ODO_PARADA = 10           # Incremento odo máximo en parada 
     
     eventos_combinados = []
     i = 0
     total_filas = len(df)
     
     while i < total_filas:
-        # --- CASO A: ANÁLISIS EN PARADA (Velocidad 0) ---
-        if df.iloc[i]['Velocidad'] == 0:
+        # --- ESTADO: VEHÍCULO EN PARADA ---
+        dist_odo = 0 if i == 0 else abs(df.iloc[i]['Odometro'] - df.iloc[i-1]['Odometro'])
+        if df.iloc[i]['Velocidad'] <= V_PARADA and dist_odo <= ODO_PARADA:
             idx_inicio = i
             f_inicio = df.iloc[i]
             
-            # Regla de Continuidad: Filtro de ruido inicial
+            # Gestión de Ruido (Filtro de 2L): Desplaza PI si hay oleaje [cite: 1, 2]
             proximo_idx = i + 1
             if proximo_idx < total_filas:
                 f_siguiente = df.iloc[proximo_idx]
-                salto_inmediato = f_siguiente['Total combustible'] - f_inicio['Total combustible']
-                if 0 < salto_inmediato < UMBRAL_RUIDO_INICIAL:
+                var_inicial = abs(f_siguiente['Total combustible'] - f_inicio['Total combustible'])
+                if var_inicial <= FILTRO_RUIDO:
                     f_inicio = f_siguiente
                     idx_inicio = proximo_idx
 
-            # Buscar fin de parada
+            # Criterio de Permanencia y Validación de Cambio de Estado [cite: 11]
             j = idx_inicio + 1
             while j < total_filas:
                 f_act = df.iloc[j]
-                odo_diff = abs(f_act['Odometro'] - df.iloc[j-1]['Odometro'])
-                if f_act['Velocidad'] > 2 or odo_diff > 1:
-                    break
+                # Validación de Persistencia: Confirmar si sale de la parada 
+                if f_act['Velocidad'] > V_PARADA:
+                    registros_futuros = df.iloc[j : j + PERSISTENCIA_MOV]
+                    # Si no hay persistencia, se considera "Registro Fugaz" y se absorbe [cite: 13, 14]
+                    if (registros_futuros['Velocidad'] > V_PARADA).all() or \
+                       (registros_futuros['Odometro'].max() - f_act['Odometro']) > 100:
+                        break
                 j += 1
             
             f_final = df.iloc[j-1]
             diff_neta = round(f_final['Total combustible'] - f_inicio['Total combustible'], 2)
 
-            # Lógica de Validación de Evento
+            # Clasificación por Umbrales [cite: 18, 19, 20]
             if abs(diff_neta) >= UMBRAL_EVENTO:
                 tipo = "CARGA" if diff_neta > 0 else "DESCARGA/ROBO"
                 eventos_combinados.append({
                     'Fecha Inicio': f_inicio['Fecha Hora'],
                     'Fecha Fin': f_final['Fecha Hora'],
                     'Tipo': tipo,
-                    'Detalle': f"{diff_neta} L ",
+                    'Detalle': f"{diff_neta} L",
                     'Km/L': "N/A",
                     'Distancia (Km)': 0,
                     'L. Inicial': f_inicio['Total combustible'],
@@ -59,31 +68,32 @@ def analizar_datos_pro(df):
                 })
             i = j
 
-        # --- CASO B: ANÁLISIS EN MOVIMIENTO (Velocidad > 0) ---
+        # --- ESTADO: VEHÍCULO EN MOVIMIENTO ---
         else:
-            # Incluye el último punto de la parada para capturar la caída inicial
+            # Regla de Continuidad: Inicia en el último punto de la parada [cite: 7]
             idx_inicio_mov = i - 1 if i > 0 else i 
             f_inicio_mov = df.iloc[idx_inicio_mov]
             
             j = i + 1
             while j < total_filas:
-                if df.iloc[j]['Velocidad'] == 0:
+                # Histéresis de Cierre: Evita cierres prematuros en semáforos 
+                if (df.iloc[j : j + HISTERESIS_CIERRE]['Velocidad'] <= V_PARADA).all():
                     break
                 j += 1
             
-            f_final_mov = df.iloc[j-1]
+            f_final_mov = df.iloc[min(j, total_filas-1)]
             distancia_tramo = (f_final_mov['Odometro'] - f_inicio_mov['Odometro']) / 1000
             consumo_tramo = f_inicio_mov['Total combustible'] - f_final_mov['Total combustible']
             
             if distancia_tramo > 0.1 and consumo_tramo > 0:
                 rendimiento_tramo = distancia_tramo / consumo_tramo
-                # Condicional de rendimiento anómalo
+                # Anomalía Crítica [cite: 22, 23]
                 if rendimiento_tramo < RENDIMIENTO_MINIMO:
                     eventos_combinados.append({
                         'Fecha Inicio': f_inicio_mov['Fecha Hora'],
                         'Fecha Fin': f_final_mov['Fecha Hora'],
                         'Tipo': 'ANOMALÍA MOVIMIENTO',
-                        'Detalle': f"Gasto: {round(consumo_tramo,2)} L en {round(distancia_tramo,2)} Km",
+                        'Detalle': f"{round(rendimiento_tramo, 2)} km/L",
                         'Km/L': round(rendimiento_tramo, 2),
                         'Distancia (Km)': round(distancia_tramo, 2),
                         'L. Inicial': f_inicio_mov['Total combustible'],
@@ -100,18 +110,20 @@ def analizar_datos_pro(df):
     total_robado = 0
     
     if not df_res.empty:
+        # Consolidación según fórmulas del documento [cite: 24]
         total_cargado = df_res[df_res['Tipo'] == 'CARGA'].apply(lambda x: x['L. Final'] - x['L. Inicial'], axis=1).sum()
         total_robado = abs(df_res[df_res['Tipo'] == 'DESCARGA/ROBO'].apply(lambda x: x['L. Final'] - x['L. Inicial'], axis=1).sum())
 
     consumo_real = round((comb_i + total_cargado) - comb_f, 2)
     consumo_neto = round(consumo_real - total_robado, 2)
+    rend_op = round(dist_total / consumo_neto, 2) if consumo_neto > 0 else 0
 
     resumen_visual = [
         {"label": "Distancia (Km)", "valor": f"{dist_total:,.2f}"},
         {"label": "Total Cargado (L)", "valor": f"{total_cargado:,.2f}"},
         {"label": "Total Robado (L)", "valor": f"{total_robado:,.2f}"},
         {"label": "Consumo Real (L)", "valor": f"{consumo_real:,.2f}"},
-        {"label": "Rend. Neto", "valor": f"{round(dist_total/consumo_neto, 2) if consumo_neto > 0 else 0} km/l"}
+        {"label": "Rend. Neto", "valor": f"{rend_op} km/l"}
     ]
     
     return resumen_visual, df_res
@@ -130,19 +142,15 @@ col_titulo, col_reglas = st.columns([1.8, 1.2])
 
 with col_titulo:
     st.title("📋 Reporte de Combustible")
-    st.write("Análisis técnico de balance de energía y auditoría de eventos.")
+    st.write("Análisis técnico de balance de energía con reglas de histéresis.")
 
 with col_reglas:
-    with st.expander("🔍 Reglas de Validación y Condicionales", expanded=True):
+    with st.expander("🔍 Histéresis y Validación de Estado", expanded=True):
         st.markdown(f"""
-        **En Parada (Velocidad = 0):**
-        * **Umbral de Evento:** Solo se registran CARGAS o ROBOS si la variación neta es **≥ 10 L**.
-        * **Filtro de Ruido:** Si el combustible sube < 1L al detenerse, el punto de inicio se desplaza para ignorar el oleaje.
-        * **Balance Neto:** Se calcula comparando el nivel exacto al llegar vs. el nivel al salir de la parada.
-
-        **En Movimiento (Velocidad > 0):**
-        * **Rendimiento Mínimo:** Se activa la alerta si el rendimiento del tramo es **< 1.2 km/L**.
-        * **Ventana de Análisis:** Incluye el diferencial de combustible desde el último segundo de la parada hasta que se detiene de nuevo.
+        **Reglas de Persistencia:**
+        * **Confirmación de Movimiento:** Requiere 2 registros consecutivos > 2 km/h para evitar fragmentación por GPS Drift.
+        * **Histéresis de Cierre:** Las detenciones momentáneas se mantienen en la ventana de movimiento[cite: 17].
+        * **Filtro de Ruido (2L):** Se ignora el oleaje inicial al detenerse para mayor precisión en cargas.
         """)
 
 file = st.file_uploader("Subir archivo CSV", type=['csv'])
@@ -162,7 +170,7 @@ if file:
             df_eventos = df_eventos.sort_values('Fecha Inicio')
             st.table(df_eventos.style.apply(style_tipo, axis=1))
         else:
-            st.info("No se detectaron eventos (Cargas/Robos ≥ 10L o Rendimientos < 1.2 km/L).")
+            st.info("No se detectaron eventos (Cargas/Robos ≥ 10L o Rendimientos Críticos).")
             
     except Exception as e:
         st.error(f"Error en el proceso: {e}")
