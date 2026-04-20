@@ -137,7 +137,7 @@ with col_reglas:
         st.markdown(f"""
         **En Parada (Velocidad = 0):**
         * **Umbral de Evento:** Solo se registran CARGAS o ROBOS si la variación neta es **≥ 10 L**.
-        * **Filtro de Ruido:** Si el combustible sube < 1L al detenerse, el punto de inicio se desplaza para ignorar el oleaje.
+        * **Filtro de Ruido:** Si el combustible sube < 2L al detenerse, el punto de inicio se desplaza para ignorar el oleaje.
         * **Balance Neto:** Se calcula comparando el nivel exacto al llegar vs. el nivel al salir de la parada.
 
         **En Movimiento (Velocidad > 0):**
